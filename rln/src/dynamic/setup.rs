@@ -63,9 +63,8 @@ impl<E: Pairing> DynamicSetup<E> {
             omega_inv_power *= omega_inv;
         }
         ark_ff::batch_inversion(&mut weights);
-        // sigma = |W| in the writeup
-        // TODO: optimize this
-        let sigma: E::ScalarField = weights.iter().copied().sum();
+        // sigma = |W| = (1 - N) / (2N); reuse the doubled domain's inverse size.
+        let sigma = (E::ScalarField::one() - n_field) * double_domain.size_inv;
         // TODO: see if we can optimize this using properties of the weights
         let weight_fft = domain.fft(&weights);
 
