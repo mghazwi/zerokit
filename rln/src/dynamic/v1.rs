@@ -10,15 +10,6 @@ use ark_std::{ops::Mul, rand::RngCore, vec::Vec, UniformRand};
 
 use super::types::{PartialAssignment, PartialProofV1};
 
-/// MSM for a given list of points and scalars.
-fn msm<G: CurveGroup>(points: &[G::Affine], scalars: &[G::ScalarField]) -> G {
-    if points.is_empty() {
-        return G::zero();
-    }
-    let scalars_bigint = scalars.iter().map(|s| s.into_bigint()).collect::<Vec<_>>();
-    G::msm_bigint(points, &scalars_bigint)
-}
-
 /// Precompute MSMs for a given partial assignment (witnesses).
 /// `partial_assignment` is ordered as (public inputs excluding 1) || (witness/aux).
 pub(super) fn create_partial_proof_from_assignment<E: Pairing>(
@@ -67,10 +58,10 @@ pub(super) fn create_partial_proof_from_assignment<E: Pairing>(
     }
 
     // 4 MSMs
-    let a_msm = msm::<E::G1>(&a1_points, &scalars);
-    let b1_msm = msm::<E::G1>(&b1_points, &scalars);
-    let b2_msm = msm::<E::G2>(&b2_points, &scalars);
-    let l_msm = msm::<E::G1>(&l_points, &l_scalars);
+    let a_msm = E::G1::msm_unchecked(&a1_points, &scalars);
+    let b1_msm = E::G1::msm_unchecked(&b1_points, &scalars);
+    let b2_msm = E::G2::msm_unchecked(&b2_points, &scalars);
+    let l_msm = E::G1::msm_unchecked(&l_points, &l_scalars);
 
     // partial_pi_a = [alpha]_1 + [A_0]_1 + sum(z_j * [A_j]_1) , where z_j = known witnesses
     let mut partial_pi_a = pk.vk.alpha_g1.into();
@@ -140,10 +131,10 @@ fn finish_partial_proof_with_assignment<E: Pairing>(
     }
 
     // 4 MSMs
-    let a_msm_rem = msm::<E::G1>(&a1_points, &scalars);
-    let b1_msm_rem = msm::<E::G1>(&b1_points, &scalars);
-    let b2_msm_rem = msm::<E::G2>(&b2_points, &scalars);
-    let l_msm_rem = msm::<E::G1>(&l_points, &l_scalars);
+    let a_msm_rem = E::G1::msm_unchecked(&a1_points, &scalars);
+    let b1_msm_rem = E::G1::msm_unchecked(&b1_points, &scalars);
+    let b2_msm_rem = E::G2::msm_unchecked(&b2_points, &scalars);
+    let l_msm_rem = E::G1::msm_unchecked(&l_points, &l_scalars);
     // random blinding r and s
     let r_g1 = pk.delta_g1.mul(r);
     let s_g1 = pk.delta_g1.mul(s);
