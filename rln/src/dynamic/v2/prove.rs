@@ -15,27 +15,16 @@ use ark_relations::r1cs::{
 use ark_std::{rand::RngCore, UniformRand};
 
 use super::setup::DynamicSetup;
-use crate::partial_proof::{Groth16Partial, PartialAssignment, PartialProof};
+use crate::dynamic::{
+    types::{PartialAssignment, PartialProofV1, PartialProofV2},
+    v1,
+};
 
-/// Caches contributions from the known, fixed part of a witness.
-/// Rebuild this object if a known value or the mask changes.
-#[derive(Debug, Clone)]
-pub struct DynamicPartialProof<E: Pairing> {
-    // we keep the simple partial proof as it is, so the old API can use it.
-    linear: PartialProof<E>,
-    assignment: PartialAssignment<E::ScalarField>,
-    static_nonlinear: E::G1,
-    gamma: Vec<E::G1Affine>,
-    dynamic_indices: Vec<usize>,
-    a_rows: Vec<usize>,
-    b_rows: Vec<usize>,
-}
-
-impl<E: Pairing> DynamicPartialProof<E> {
+impl<E: Pairing> PartialProofV2<E> {
     /// Compute the simple linear partial proof, static nonlinear point,
     /// and unified mixed/linear C points.
     /// `assignment` excludes constant one, just like the simple partial API.
-    pub fn from_circom_assignment(
+    pub(in crate::dynamic) fn from_circom_assignment(
         pk: &ProvingKey<E>,
         matrices: &ConstraintMatrices<E::ScalarField>,
         setup: &DynamicSetup<E>,
@@ -48,9 +37,9 @@ impl<E: Pairing> DynamicPartialProof<E> {
         let m = p + pk.l_query.len();
         let domain = setup.domain();
 
-        // 2. Reuse the old linear partial proof unchanged: A_pre, B_pre,
+        // 2. Reuse the v1 linear partial proof: A_pre, B_pre,
         // rho_pre and C_linear. We'll store the nonlinear contribution separately.
-        let linear = Groth16Partial::<E>::prove_partial(pk, assignment)?;
+        let linear = v1::create_partial_proof_from_assignment(pk, assignment)?;
         // Sorted dynamic witness indices (sup') in the full assignment.
         // Index zero is constant one and is not dynamic.
         let dynamic_indices: Vec<_> = assignment
@@ -174,7 +163,7 @@ impl<E: Pairing> DynamicPartialProof<E> {
     }
 
     /// Synthesize a completed circuit and finish
-    pub fn finish_proof<C: ConstraintSynthesizer<E::ScalarField>, R: RngCore>(
+    pub(in crate::dynamic) fn finish_proof<C: ConstraintSynthesizer<E::ScalarField>, R: RngCore>(
         &self,
         pk: &ProvingKey<E>,
         circuit: C,
@@ -202,7 +191,7 @@ impl<E: Pairing> DynamicPartialProof<E> {
 
     /// Finish with blinding scalars from RNG.
     /// The full assignment includes constant one.
-    pub fn finish_with_rng<R: RngCore>(
+    pub(in crate::dynamic) fn finish_with_rng<R: RngCore>(
         &self,
         pk: &ProvingKey<E>,
         matrices: &ConstraintMatrices<E::ScalarField>,
@@ -217,7 +206,7 @@ impl<E: Pairing> DynamicPartialProof<E> {
 
     /// finish with given r and s
     #[allow(clippy::too_many_arguments)]
-    pub fn finish_with_randomness(
+    pub(in crate::dynamic) fn finish_with_randomness(
         &self,
         pk: &ProvingKey<E>,
         matrices: &ConstraintMatrices<E::ScalarField>,
@@ -330,8 +319,8 @@ impl<E: Pairing> DynamicPartialProof<E> {
         })
     }
 
-    /// Original simple partial proof
-    pub fn linear_partial(&self) -> &PartialProof<E> {
+    /// Experimental v1 linear partial proof
+    pub fn linear_partial(&self) -> &PartialProofV1<E> {
         &self.linear
     }
     /// Static quotient contribution Q0 = A0 * B0

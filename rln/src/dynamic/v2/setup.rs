@@ -19,7 +19,6 @@ pub struct DynamicSetup<E: Pairing> {
 }
 
 impl<E: Pairing> DynamicSetup<E> {
-
     /// Derive public setup data from a Circom/snarkjs proving key.
     pub fn from_circom_key(pk: &ProvingKey<E>) -> Result<Self, SynthesisError> {
         let n = pk.h_query.len();
