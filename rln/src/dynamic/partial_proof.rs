@@ -8,7 +8,10 @@ use ark_ec::{pairing::Pairing, AffineRepr, CurveGroup, VariableBaseMSM};
 use ark_ff::{One, Zero};
 use ark_groth16::{Proof, ProvingKey};
 use ark_poly::{EvaluationDomain, Radix2EvaluationDomain};
-use ark_relations::r1cs::{ConstraintMatrices, SynthesisError};
+use ark_relations::r1cs::{
+    ConstraintMatrices, ConstraintSynthesizer, ConstraintSystem, OptimizationGoal, SynthesisError,
+    SynthesisMode,
+};
 use ark_std::{rand::RngCore, UniformRand};
 
 use super::setup::DynamicSetup;
@@ -65,7 +68,7 @@ impl<E: Pairing> DynamicPartialProof<E> {
         let mut a = vec![E::ScalarField::zero(); n];
         let mut b = a.clone();
         let mut a_support = vec![false; n]; // A*sup'
-        let mut b_support = a_support.clone();  // B*sup'
+        let mut b_support = a_support.clone(); // B*sup'
 
         for (matrix, values, support) in [
             (&matrices.a, &mut a, &mut a_support),
@@ -168,6 +171,33 @@ impl<E: Pairing> DynamicPartialProof<E> {
                 .filter_map(|(i, &yes)| yes.then_some(i))
                 .collect(),
         })
+    }
+
+    /// Synthesize a completed circuit and finish
+    pub fn finish_proof<C: ConstraintSynthesizer<E::ScalarField>, R: RngCore>(
+        &self,
+        pk: &ProvingKey<E>,
+        circuit: C,
+        setup: &DynamicSetup<E>,
+        rng: &mut R,
+    ) -> Result<Proof<E>, SynthesisError> {
+        let cs = ConstraintSystem::new_ref();
+        cs.set_optimization_goal(OptimizationGoal::Constraints);
+        cs.set_mode(SynthesisMode::Prove {
+            construct_matrices: true,
+        });
+        circuit.generate_constraints(cs.clone())?;
+        cs.finalize();
+        let matrices = cs.to_matrices().ok_or(SynthesisError::MissingCS)?;
+        let full_assignment = {
+            let prover = cs.borrow().ok_or(SynthesisError::MissingCS)?;
+            [
+                prover.instance_assignment.as_slice(),
+                prover.witness_assignment.as_slice(),
+            ]
+            .concat()
+        };
+        self.finish_with_rng(pk, &matrices, setup, &full_assignment, rng)
     }
 
     /// Finish with blinding scalars from RNG.
@@ -501,4 +531,3 @@ fn union(a: &[usize], b: &[usize]) -> Vec<usize> {
 
     result
 }
-
