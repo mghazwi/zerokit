@@ -1,4 +1,8 @@
-//! Witness-dependent preprocessing for dynamic Groth16
+//! Witness-dependent preprocessing and finishing for dynamic Groth16.
+//!
+//! Note: in formulas, `**` denotes length-N cyclic convolution
+//! `*` denotes ordinary multiplication, matrix-vector multiplication, or
+//! scalar multiplication of a group point.
 
 use ark_ec::{pairing::Pairing, AffineRepr, CurveGroup, VariableBaseMSM};
 use ark_ff::{One, Zero};
@@ -10,7 +14,7 @@ use ark_std::{rand::RngCore, UniformRand};
 use super::setup::DynamicSetup;
 use crate::partial_proof::{Groth16Partial, PartialAssignment, PartialProof};
 
-/// Dynamic partial proof caches values which can precompute using known, non-changing witness values
+/// Caches contributions from the known, fixed part of a witness.
 /// Rebuild this object if a known value or the mask changes.
 #[derive(Debug, Clone)]
 pub struct DynamicPartialProof<E: Pairing> {
@@ -25,8 +29,8 @@ pub struct DynamicPartialProof<E: Pairing> {
 }
 
 impl<E: Pairing> DynamicPartialProof<E> {
-    /// Compute the linear (simple partial proof), static nonlinear
-    /// ,and unified mixed/linear C points.
+    /// Compute the simple linear partial proof, static nonlinear point,
+    /// and unified mixed/linear C points.
     /// `assignment` excludes constant one, just like the simple partial API.
     pub fn from_circom_assignment(
         pk: &ProvingKey<E>,
@@ -44,7 +48,8 @@ impl<E: Pairing> DynamicPartialProof<E> {
         // 2. Reuse the old linear partial proof unchanged: A_pre, B_pre,
         // rho_pre and C_linear. We'll store the nonlinear contribution separately.
         let linear = Groth16Partial::<E>::prove_partial(pk, assignment)?;
-        // Indices of dynamic witness entries in the full assignment (sup')
+        // Sorted dynamic witness indices (sup') in the full assignment.
+        // Index zero is constant one and is not dynamic.
         let dynamic_indices: Vec<_> = assignment
             .values
             .iter()
@@ -52,7 +57,8 @@ impl<E: Pairing> DynamicPartialProof<E> {
             .filter_map(|(i, v)| v.is_none().then_some(i + 1))
             .collect();
 
-        // 3. Compute vectors a = A*z0 and b = B*z0.
+        // 3. Compute vectors a = A * z0 and b = B * z0, where z0 contains
+        // the known values, zero for unknown entries, and constant one at index 0.
         // Support masks mark rows touched by unknown variables, independently
         // of their values. U needs B's affected rows; V needs A's affected rows.
         let n = domain.size();
@@ -93,23 +99,21 @@ impl<E: Pairing> DynamicPartialProof<E> {
             }
         }
 
-        // 4. Compute Wbar * a and Wbar * b. These are the scalar-valued
+        // 4. Compute Wbar ** a and Wbar ** b. These are the scalar-valued
         // convolution terms in U/V, also used for the static nonlinear point.
         let wbar_a = convolve_field_with_wbar(domain, &a, setup.weight_fft());
         let wbar_b = convolve_field_with_wbar(domain, &b, setup.weight_fft());
 
         // 5. compute and cache Q0 = A0*B0, where
-        // Q0 = [Z(tau) * quotient(P,Z)(tau) / delta]_1
-        // Q0 = sum_i [a_i * (Wbar * b)_i + b_i * (Wbar * a)_i - (Wbar * (a ◦ b))_i - sigma * a_i * b_i] * Lambda_i.
+        // Q0 = sum_i [a_i * (Wbar ** b)_i + b_i * (Wbar ** a)_i
+        //      - (Wbar ** (a * b))_i - sigma * a_i * b_i] * Lambda_i
         let static_nonlinear = compute_static_nonlinear(setup, &a, &b, &wbar_a, &wbar_b);
 
         // 6. Compute the row-indexed projection points:
-        // U = a ◦ Psi + (Wbar * a) ◦ Lambda + W * (a ◦ Lambda),
-        // V = b ◦ Psi + (Wbar * b) ◦ Lambda + W * (b ◦ Lambda).
-        // Here * denotes cyclic convolution and ◦ denotes pointwise scaling.
+        // U = a * Psi + (Wbar ** a) * Lambda + W ** (a * Lambda),
+        // V = b * Psi + (Wbar ** b) * Lambda + W ** (b * Lambda).
         let u = projections(setup, &a, &wbar_a, &b_support);
         let v = projections(setup, &b, &wbar_b, &a_support);
-
 
         // slots[j] maps a full witness index j to its position in the Gamma array.
         let mut slots = vec![None; m];
@@ -118,8 +122,7 @@ impl<E: Pairing> DynamicPartialProof<E> {
         }
 
         // 7. Combine row-indexed U/V into one point per dynamic variable j:
-        // Gamma_j = K_j + sum_i(A_ij V_i + B_ij U_i).
-        // K_j is the private L-query point, or identity for a public variable.
+        // Gamma_j = K_j + sum_i(A_ij * V_i + B_ij * U_i).
         let mut gamma: Vec<E::G1> = dynamic_indices
             .iter()
             .map(|&j| {
@@ -252,33 +255,32 @@ impl<E: Pairing> DynamicPartialProof<E> {
             + pk.vk.delta_g2 * s;
 
         // 5. Prepare weights for A'*B':
-        // wbar_a = Wbar * a'
-        // wbar_b = Wbar * b'
+        // wbar_a = Wbar ** a'
+        // wbar_b = Wbar ** b'
         let wbar_a = convolve_field_with_wbar(domain, &a_prime, setup.weight_fft());
         let wbar_b = convolve_field_with_wbar(domain, &b_prime, setup.weight_fft());
 
         // 6. Concatenate all C MSMs into one big MSM:
         // c_update = Gamma*z' + B1*(r*z') + Lambda*e + Psi*d
 
-        // Gamma*z'
+        // sum_j z'_j * Gamma_j
         let mut c_points = self.gamma.clone();
         let mut c_scalars = dynamic_values.clone();
-        // B1*(r*z')
+        // sum_j (r * z'_j)
         for (&j, &value) in self.dynamic_indices.iter().zip(&dynamic_values) {
             c_points.push(pk.b_g1_query[j]);
             c_scalars.push(r * value);
         }
-        // Lambda*e where:
-        // e_k = a'_k(Wbar*b')_k + b'_k(Wbar*a')_k
+        // sum_k e_k * Lambda_k, where:
+        // e_k = a'_k * (Wbar ** b')_k + b'_k * (Wbar ** a')_k.
         // we use the union because: either a'_k or b'_k may contribute
         // outside both supports, a'_k = b'_k = 0, so e_k = 0
         for k in union(&self.a_rows, &self.b_rows) {
             c_points.push(setup.lambda()[k]);
             c_scalars.push(a_prime[k] * wbar_b[k] + b_prime[k] * wbar_a[k]);
         }
-        // Psi*d where:
-        // d_k = a'_k * b'_k
-        // use the intersection: both factors must be nonzero
+        // sum_k d_k * Psi_k, where d_k = a'_k * b'_k.
+        // use the intersection: both factors may be nonzero
         // if one factor is zero, then d_k = 0
         for k in intersection(&self.a_rows, &self.b_rows) {
             c_points.push(setup.psi()[k]);
@@ -302,33 +304,33 @@ impl<E: Pairing> DynamicPartialProof<E> {
     pub fn linear_partial(&self) -> &PartialProof<E> {
         &self.linear
     }
+    /// Static quotient contribution Q0 = A0 * B0
     pub fn static_nonlinear(&self) -> &E::G1 {
         &self.static_nonlinear
     }
-    /// Static linear C plus T(A0 B0), before fresh proof randomization.
+    /// Static linear C + Q0, before fresh proof randomization.
     pub fn partial_c(&self) -> E::G1 {
         self.linear.partial_pi_c + self.static_nonlinear
     }
     /// Unified mixed-term plus private linear-C bases, ordered by dynamic_indices.
-    /// Gamma_j = K_j + sum_i(A_ij V_i + B_ij U_i).
+    /// Gamma_j = K_j + sum_i(A_ij * V_i + B_ij * U_i).
     pub fn gamma(&self) -> &[E::G1Affine] {
         &self.gamma
     }
-    /// Indices of dynamic witness entries in the full assignment (sup')
-    /// index 0 is constant one.
+    /// Sorted dynamic witness indices in the full assignment (sup').
+    /// Index 0 is constant one and is never included.
     pub fn dynamic_indices(&self) -> &[usize] {
         &self.dynamic_indices
     }
-    /// possibly changing A rows
+    /// Sorted, duplicate-free rows affected by dynamic A columns.
     pub fn a_rows(&self) -> &[usize] {
         &self.a_rows
     }
-    /// possibly changing B rows.
+    /// Sorted, duplicate-free rows affected by dynamic B columns.
     pub fn b_rows(&self) -> &[usize] {
         &self.b_rows
     }
 }
-
 
 fn validate_inputs<E: Pairing>(
     pk: &ProvingKey<E>,
@@ -372,7 +374,7 @@ fn validate_inputs<E: Pairing>(
 }
 
 /// Given `d = a * b`, `sigma = Sum(W)` ,the Lambda scalars `c` are:
-/// `c_k = a_k (Wbar**b)_k + b_k (Wbar**a)_k - (Wbar**d)_k - sigma**d_k`
+/// `c_k = a_k (Wbar**b)_k + b_k (Wbar**a)_k - (Wbar**d)_k - sigma*d_k`
 /// returns `A_0 * B_0 = MSM(c, lambda)`
 fn compute_static_nonlinear<E: Pairing>(
     setup: &DynamicSetup<E>,
@@ -383,10 +385,11 @@ fn compute_static_nonlinear<E: Pairing>(
 ) -> E::G1 {
     let product: Vec<_> = a.iter().zip(b).map(|(a, b)| *a * b).collect();
     let wbar_product = convolve_field_with_wbar(setup.domain(), &product, setup.weight_fft());
-    // sum(W) == weight_fft , because:
+    // sigma = sum(W) == weight_fft , because:
     // weight_fft = \sum_{i=0}^{N-1}\omega^{ik}W_i
     // at k=0 :
     // weight_fft[0] = \sum_{i=0}^{N-1} W_i
+    // we can also compute it as = (1 - N) / (2 * N)
     let sigma = setup.weight_fft()[0];
     let lambda_scalars: Vec<_> = (0..setup.domain().size())
         .map(|k| a[k] * wbar_b[k] + b[k] * wbar_a[k] - wbar_product[k] - sigma * product[k])
@@ -394,7 +397,7 @@ fn compute_static_nonlinear<E: Pairing>(
     E::G1::msm_unchecked(setup.lambda(), &lambda_scalars)
 }
 
-/// Length-N cyclic convolution Wbar * values, where `Wbar[k] = W[-k]`.
+/// Length-N cyclic convolution `Wbar ** values`, where `Wbar[k] = W[(-k) mod N]`.
 /// The input `weight_fft` is cached FFT(W), NOT FFT(Wbar). Reversal in the original
 /// domain reverses Fourier indices too: `FFT(Wbar)[k] = FFT(W)[(-k) mod N]`.
 fn convolve_field_with_wbar<F: ark_ff::FftField>(
@@ -415,9 +418,9 @@ fn convolve_field_with_wbar<F: ark_ff::FftField>(
 }
 
 /// Compute U (values=a) or V (values=b):
-/// `result[k] = values[k]*Psi[k] + reverse_convolution[k]*Lambda[k]
-///             + (W * (values ◦ Lambda))[k]`
-/// `reverse_convolution = Wbar * values` from convolve_field_with_wbar.
+/// `result[k] = values[k] * Psi[k] + reverse_convolution[k] * Lambda[k]
+///             + (W ** (values * Lambda))[k]`.
+/// `reverse_convolution = Wbar ** values` comes from convolve_field_with_wbar.
 fn projections<E: Pairing>(
     setup: &DynamicSetup<E>,
     values: &[E::ScalarField],
@@ -425,7 +428,7 @@ fn projections<E: Pairing>(
     support: &[bool],
 ) -> Vec<E::G1> {
     let domain = setup.domain();
-    // Group convolution: W * (values ◦ Lambda).
+    // Group convolution: W ** (values * Lambda).
     let mut result: Vec<_> = setup
         .lambda()
         .iter()
