@@ -1,5 +1,5 @@
 use ark_ec::{pairing::Pairing, CurveGroup, VariableBaseMSM};
-use ark_ff::{PrimeField, Zero};
+use ark_ff::Zero;
 use ark_groth16::{r1cs_to_qap::R1CSToQAP, Proof, ProvingKey};
 use ark_poly::GeneralEvaluationDomain;
 use ark_relations::r1cs::{
@@ -159,8 +159,7 @@ fn finish_partial_proof_with_assignment<E: Pairing>(
     // l_acc = partial_pi_c + remaining L MSM
     let l_acc = partial.partial_pi_c + l_msm_rem;
     // h_acc = MSM of quotient polynomial coefficients with h_query
-    let h_assignment = h.iter().map(|s_i| s_i.into_bigint()).collect::<Vec<_>>();
-    let h_acc = E::G1::msm_bigint(&pk.h_query, &h_assignment);
+    let h_acc = E::G1::msm_unchecked(&pk.h_query, h);
 
     let r_s_delta_g1 = pk.delta_g1 * (r * s);
     let s_g_a = g_a * s;
