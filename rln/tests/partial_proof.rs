@@ -9,7 +9,13 @@ use ark_std::{
     rand::{RngCore, SeedableRng},
     test_rng, UniformRand,
 };
-use rln::partial_proof::{Groth16Partial, PartialAssignment};
+use rln::{
+    dynamic::{
+        CircomReduction, DynamicQap, Groth16DynamicV1, Groth16DynamicV2,
+        PartialAssignment as DynamicAssignment,
+    },
+    partial_proof::{Groth16Partial, PartialAssignment},
+};
 
 // Simple dummy multiplication circuit.
 #[derive(Clone, Copy)]
@@ -180,4 +186,96 @@ fn test_partial_proof_with_matrices() {
         Groth16::<Bn254>::verify_with_processed_vk(&pvk, &[c], &finished_partial_proof).unwrap()
     );
     assert!(Groth16::<Bn254>::verify_with_processed_vk(&pvk, &[c], &proof_full).unwrap());
+}
+
+fn check_dynamic_partial_proofs<QAP: DynamicQap>() {
+    let mut rng = ark_std::rand::rngs::StdRng::seed_from_u64(42);
+    let (pk, vk) =
+        Groth16::<Bn254, QAP>::setup(MulCircuit::<Fr> { a: None, b: None }, &mut rng).unwrap();
+    let a = Fr::from(3u64);
+    let cs = build_cs(MulCircuit {
+        a: Some(a),
+        b: Some(Fr::from(7u64)),
+    });
+    let matrices = cs.to_matrices().unwrap();
+    let setup = Groth16DynamicV2::<Bn254>::setup::<QAP>(&pk).unwrap();
+
+    // Fix a; both b and the public output can change.
+    let assignment = DynamicAssignment::new(vec![None, Some(a), None]);
+    let v1 = Groth16DynamicV1::<Bn254, QAP>::preprocess(&pk, &assignment).unwrap();
+    let v2 = Groth16DynamicV2::<Bn254>::preprocess(&pk, &matrices, &setup, &assignment).unwrap();
+
+    for b in [Fr::from(0u64), Fr::from(7u64)] {
+        let full_assignment = [Fr::from(1u64), a * b, a, b];
+        let r = Fr::rand(&mut rng);
+        let s = Fr::rand(&mut rng);
+        let expected = Groth16::<Bn254, QAP>::create_proof_with_reduction_and_matrices(
+            &pk,
+            r,
+            s,
+            &matrices,
+            cs.num_instance_variables(),
+            cs.num_constraints(),
+            &full_assignment,
+        )
+        .unwrap();
+        let proof_v1 = Groth16DynamicV1::<Bn254, QAP>::finish_with_matrices(
+            &pk,
+            &v1,
+            r,
+            s,
+            &matrices,
+            cs.num_instance_variables(),
+            cs.num_constraints(),
+            &full_assignment,
+        )
+        .unwrap();
+        let proof_v2 = Groth16DynamicV2::<Bn254>::finish_with_randomness(
+            &pk,
+            &matrices,
+            &setup,
+            &full_assignment,
+            r,
+            s,
+            &v2,
+        )
+        .unwrap();
+
+        assert_eq!(proof_v1, expected);
+        assert_eq!(proof_v2, expected);
+        assert!(Groth16::<Bn254>::verify_with_processed_vk(
+            &prepare_verifying_key(&vk),
+            &[a * b],
+            &proof_v2,
+        )
+        .unwrap());
+
+        // Circuit-based finishing should use the same randomness as a full proof.
+        let circuit = MulCircuit {
+            a: Some(a),
+            b: Some(b),
+        };
+        let mut full_rng = rng.clone();
+        let mut v1_rng = rng.clone();
+        let mut v2_rng = rng.clone();
+        let expected = Groth16::<Bn254, QAP>::prove(&pk, circuit, &mut full_rng).unwrap();
+        assert_eq!(
+            Groth16DynamicV1::<Bn254, QAP>::finish(&pk, circuit, &mut v1_rng, &v1).unwrap(),
+            expected
+        );
+        assert_eq!(
+            Groth16DynamicV2::<Bn254>::finish(&pk, circuit, &setup, &mut v2_rng, &v2).unwrap(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn test_dynamic_partial_proofs_circom() {
+    check_dynamic_partial_proofs::<CircomReduction>();
+}
+
+#[test]
+fn test_dynamic_partial_proofs_libsnark() {
+    check_dynamic_partial_proofs::<LibsnarkReduction>();
 }
