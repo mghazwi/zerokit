@@ -14,7 +14,9 @@ use ark_groth16::{
 use ark_relations::r1cs::{ConstraintMatrices, ConstraintSynthesizer, SynthesisError};
 use ark_std::{marker::PhantomData, rand::RngCore};
 pub use types::{PartialAssignment, PartialProofV1, PartialProofV2};
-pub use v2::{prove, setup, DynamicSetup};
+pub use v2::{prove, setup, DynamicQap, DynamicSetup};
+
+pub use crate::circuit::qap::CircomReduction;
 
 /// Entry point (API) for v1 linear partial proving.
 pub struct Groth16DynamicV1<E: Pairing, QAP: R1CSToQAP = LibsnarkReduction> {
@@ -65,15 +67,15 @@ impl<E: Pairing, QAP: R1CSToQAP> Groth16DynamicV1<E, QAP> {
     }
 }
 
-/// Entry point for full-domain dynamic proving using a Circom-compatible key.
+/// Full-domain dynamic proving. The reduction must match the proving key.
 pub struct Groth16DynamicV2<E: Pairing> {
     _marker: PhantomData<E>,
 }
 
 impl<E: Pairing> Groth16DynamicV2<E> {
-    /// Derive the reusable v2 setup from a Circom-compatible key.
-    pub fn setup(pk: &ProvingKey<E>) -> Result<DynamicSetup<E>, SynthesisError> {
-        DynamicSetup::from_circom_key(pk)
+    /// Derive the reusable v2 setup based on the selected QAP convention.
+    pub fn setup<QAP: DynamicQap>(pk: &ProvingKey<E>) -> Result<DynamicSetup<E>, SynthesisError> {
+        DynamicSetup::new::<QAP>(pk)
     }
 
     /// Prepare v2 for one static partial assignment.
@@ -83,7 +85,7 @@ impl<E: Pairing> Groth16DynamicV2<E> {
         setup: &DynamicSetup<E>,
         assignment: &PartialAssignment<E::ScalarField>,
     ) -> Result<PartialProofV2<E>, SynthesisError> {
-        PartialProofV2::from_circom_assignment(pk, matrices, setup, assignment)
+        PartialProofV2::from_assignment(pk, matrices, setup, assignment)
     }
 
     /// Finish v2 by synthesizing a completed circuit.

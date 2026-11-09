@@ -24,7 +24,7 @@ impl<E: Pairing> PartialProofV2<E> {
     /// Compute the simple linear partial proof, static nonlinear point,
     /// and unified mixed/linear C points.
     /// `assignment` excludes constant one, just like the simple partial API.
-    pub(in crate::dynamic) fn from_circom_assignment(
+    pub(in crate::dynamic) fn from_assignment(
         pk: &ProvingKey<E>,
         matrices: &ConstraintMatrices<E::ScalarField>,
         setup: &DynamicSetup<E>,
@@ -377,7 +377,6 @@ fn validate_inputs<E: Pairing>(
         || pk.b_g2_query.len() != m
         || pk.l_query.len() != m - p
         || pk.vk.gamma_abc_g1.len() != p
-        || pk.h_query.len() != domain.size()
         || matrices.a.len() != matrices.num_constraints
         || matrices.b.len() != matrices.num_constraints
         || matrices

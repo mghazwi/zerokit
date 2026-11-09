@@ -2,4 +2,4 @@
 pub mod prove;
 pub mod setup;
 
-pub use setup::DynamicSetup;
+pub use setup::{DynamicQap, DynamicSetup};
